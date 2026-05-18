@@ -229,6 +229,54 @@ Therefore, the effect appears to occur mainly during predicate evaluation inside
 
 ---
 
+## Filter Predicate Order (With Index)
+
+After creating an index on `customer_id`:
+
+```sql
+CREATE INDEX idx_orders_customer_id
+ON orders(customer_id);
+```
+
+the predicate-order effect disappeared statistically.
+
+### Statistical Result
+
+```text
+T-statistic : -1.0990454926689885
+P-value     : 0.27441378533925087
+Fail to reject H0 → no significant difference
+```
+
+Both query forms produced effectively identical execution plans:
+
+```text
+Bitmap Heap Scan
+  -> Bitmap Index Scan on idx_orders_customer_id
+```
+
+The optimizer used the index to directly locate matching rows for:
+
+```text
+customer_id = X
+```
+
+before applying the remaining filter:
+
+```text
+status = 'completed'
+```
+
+As a result:
+
+- predicate textual order no longer affected execution time significantly
+- row filtering was dominated by indexed access rather than sequential predicate evaluation
+- executor-level predicate ordering effects became negligible
+
+This reinforces the idea that indexing has a far greater impact on performance than manual predicate ordering.
+
+---
+
 ## Join Order
 
 The join order experiment showed no statistically significant difference.
@@ -243,4 +291,6 @@ This experiment suggests that:
 
 - join order generally does not matter in PostgreSQL for logically equivalent queries
 - filter predicate order can produce measurable differences in sequential scan scenarios, especially when predicate selectivity differs significantly
-- PostgreSQL still preserves the declarative nature of SQL at the optimizer level, even if small executor-level effects remain observable
+- these differences likely occur at the executor level due to predicate evaluation order
+- once appropriate indexes are introduced, predicate order becomes effectively irrelevant
+- PostgreSQL preserves the declarative nature of SQL at the optimizer level, while small executor-level effects may still be observable in non-indexed scans
