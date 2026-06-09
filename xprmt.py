@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 
 random_seed = 106
-rng = random.Random(random_seed)
+# rng = random.Random(random_seed)
 
 
 os.makedirs("results", exist_ok=True)
@@ -34,35 +34,44 @@ def run_query(query):
     return elapsed_seconds
 
 
-def run_filter_experiment():
-    results = []
+def run_filter_experiment(random_seed):
+    seeds = [random_seed + i for i in range(30)]
+    total_experiment = 100
 
-    for customer_id in tqdm(range(1, 101), desc="Filter experiment"):
+    total = len(seeds) * total_experiment
 
-        query_a = f"""
-        SELECT COUNT(*)
-        FROM orders
-        WHERE customer_id = {customer_id}
-          AND status = 'completed'
-        """
+    with tqdm(total=total, desc="Filter experiment") as pbar:
+        results = []
+        for seed in seeds:
+            rng = random.Random(seed)
 
-        query_b = f"""
-        SELECT COUNT(*)
-        FROM orders
-        WHERE status = 'completed'
-          AND customer_id = {customer_id}
-        """
+            for customer_id in range(1, total_experiment + 1):
 
-        if rng.random() < 0.5:
-            t_a = run_query(query_a)
-            t_b = run_query(query_b)
-            order = "A_then_B"
-        else:
-            t_b = run_query(query_b)
-            t_a = run_query(query_a)
-            order = "B_then_A"
+                query_a = f"""
+                SELECT COUNT(*)
+                FROM orders
+                WHERE customer_id = {customer_id}
+                AND status = 'completed'
+                """
 
-        results.append((customer_id, order, t_a, t_b))
+                query_b = f"""
+                SELECT COUNT(*)
+                FROM orders
+                WHERE status = 'completed'
+                AND customer_id = {customer_id}
+                """
+
+                if rng.random() < 0.5:
+                    t_a = run_query(query_a)
+                    t_b = run_query(query_b)
+                    order = "A_then_B"
+                else:
+                    t_b = run_query(query_b)
+                    t_a = run_query(query_a)
+                    order = "B_then_A"
+
+                results.append((customer_id, order, t_a, t_b))
+                pbar.update(1)
 
     df = pd.DataFrame(
         results,
@@ -83,7 +92,7 @@ def run_filter_experiment():
     print("Saved → results/filter_order_results.csv")
 
 
-def run_join_experiment():
+def run_join_experiment(rng):
     results = []
 
     query_a = """
@@ -142,5 +151,5 @@ def run_join_experiment():
 
 # MAIN
 if __name__ == "__main__":
-    run_filter_experiment()
+    run_filter_experiment(16)
     # run_join_experiment()
