@@ -96,6 +96,40 @@ This shows that **the order of filter predicate in `WHERE` clause really matter*
 ## Predicate Reordering Behavior
 When we executed the `EXPLAIN` keyword to obtain query plans, we got the filter order in those two were different. The optimizer appeared to preserve the textual order of predicates inside the query plan.
 
+```
+dummy_ecommerce=# EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE status = 'completed'
+  AND customer_id = 5173;
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=30029.24..30029.24 rows=1 width=8)
+   ->  Gather  (cost=30029.02..30029.23 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=29029.02..29029.03 rows=1 width=8)
+               ->  Parallel Seq Scan on orders  (cost=0.00..29029.00 rows=8 width=0)
+                     Filter: ((status = 'completed'::text) AND (customer_id = 5173))
+(6 rows)
+
+dummy_ecommerce=# EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE customer_id = 5173
+  AND status = 'completed';
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=30029.24..30029.24 rows=1 width=8)
+   ->  Gather  (cost=30029.02..30029.23 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=29029.02..29029.03 rows=1 width=8)
+               ->  Parallel Seq Scan on orders  (cost=0.00..29029.00 rows=8 width=0)
+                     Filter: ((customer_id = 5173) AND (status = 'completed'::text))
+(6 rows)
+
+dummy_ecommerce=# 
+```
+
 From we the samples, we can clearly see that query A, where `customer_id = X` appeared first, consistently performed faster than query B. Since `customer_id = X` is highly selective while `status = 'completed'` is not selective, this suggests that the optimizer may evaluate predicates sequentially during row filtering. And because of short-circuit evaluation, query A is less likely to evaluated the later predicate, which explain why query A was faster.
 
 The short-circuit behavior is also mentioned in [PostgreSQL 18.4 Documentation: 4.2.14. Expression Evaluation Rules](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-EXPRESS-EVAL)
@@ -114,7 +148,73 @@ WHERE customer_id = EXTRACT(DAY FROM NOW())
   AND status = 'completed';
 ```
 
-Here, we tried to introduce a difference in execution cost between the predicates by adding the `NOW()` function to one of the queries. As expected, the predicate involving the function was pushed later in the filter order, since it has a higher execution cost.
+Here, we tried to introduce a difference in execution cost between the predicates by adding the `NOW()` function to one of the queries, and the following results were obtained.
+
+```
+dummy_ecommerce=# EXPLAIN
+SELECT *
+FROM orders
+WHERE status = 'completed'
+  AND order_date >= NOW() - INTERVAL '30 days';
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Gather  (cost=1000.00..34213.37 rows=177 width=33)
+   Workers Planned: 2
+   ->  Parallel Seq Scan on orders  (cost=0.00..33195.67 rows=74 width=33)
+         Filter: ((status = 'completed'::text) AND (order_date >= (now() - '30 days'::interval)))
+(4 rows)
+
+dummy_ecommerce=# EXPLAIN
+SELECT *
+FROM orders
+WHERE order_date >= NOW() - INTERVAL '30 days'
+  AND status = 'completed';
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Gather  (cost=1000.00..34213.37 rows=177 width=33)
+   Workers Planned: 2
+   ->  Parallel Seq Scan on orders  (cost=0.00..33195.67 rows=74 width=33)
+         Filter: ((status = 'completed'::text) AND (order_date >= (now() - '30 days'::interval)))
+(4 rows)
+
+dummy_ecommerce=# 
+```
+
+```
+dummy_ecommerce=# EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE status = 'completed'
+  AND customer_id = EXTRACT(DAY FROM NOW());
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=36288.57..36288.58 rows=1 width=8)
+   ->  Gather  (cost=36288.36..36288.57 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=35288.36..35288.37 rows=1 width=8)
+               ->  Parallel Seq Scan on orders  (cost=0.00..35279.00 rows=3744 width=0)
+                     Filter: ((status = 'completed'::text) AND ((customer_id)::numeric = EXTRACT(day FROM now())))
+(6 rows)
+
+dummy_ecommerce=# EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE customer_id = EXTRACT(DAY FROM NOW())
+  AND status = 'completed';
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=36288.57..36288.58 rows=1 width=8)
+   ->  Gather  (cost=36288.36..36288.57 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=35288.36..35288.37 rows=1 width=8)
+               ->  Parallel Seq Scan on orders  (cost=0.00..35279.00 rows=3744 width=0)
+                     Filter: ((status = 'completed'::text) AND ((customer_id)::numeric = EXTRACT(day FROM now())))
+(6 rows)
+
+dummy_ecommerce=# 
+```
+
+As expected, the predicate involving the function was pushed later in the filter order, since it has a higher execution cost.
 
 ---
 
