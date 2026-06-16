@@ -1,17 +1,18 @@
 # SQL Filter Predicate and Join Order Experiment in PostgreSQL
+A comic version of this experiment is available [here](comic.pdf)
 
 ## Background
 
-This experiment was conducted to investigate whether:
+This experiment was conducted to find out whether:
 
 1. The order of filter predicates in the `WHERE` clause affects query performance.
 2. The order of tables in `JOIN` operations affects query performance.
 
-The database system used was PostgreSQL without any additional indexes. All tables were scanned sequentially.
+The database system used was PostgreSQL without any additional indexes.
 
 Initially, my hypothesis was:
 
-> SQL is a declarative language, therefore the textual order of predicates and joins should not matter because the optimizer should determine the execution strategy independently from the query writing order.
+> SQL is a declarative language, therefore the order of predicates and joins in a query should not matter because the optimizer should determine the most optimal execution strategy.
 
 ---
 
@@ -51,64 +52,28 @@ FROM orders
 WHERE status = 'completed'
   AND customer_id = X;
 ```
+We used Python to execute this experiment, so to minimize data transfer overhead between Python and the databas, we only select the `COUNT(*)`. The experiment was repeated 100 times using different `customer_id` values. 
 
-The experiment was repeated 100 times using different `customer_id` values.
-
-The execution order between Query A and Query B was randomized with a deterministic random seed to minimize cache bias.
-
----
-
-## Join Order Experiment
-
-Two logically equivalent join queries were tested repeatedly:
-
-### Query A
-
-```sql
-SELECT COUNT(*)
-FROM products p
-JOIN order_items oi
-    ON oi.product_id = p.product_id
-JOIN orders o
-    ON o.order_id = oi.order_id
-JOIN customers c
-    ON c.customer_id = o.customer_id;
-```
-
-### Query B
-
-```sql
-SELECT COUNT(*)
-FROM customers c
-JOIN orders o
-    ON o.customer_id = c.customer_id
-JOIN order_items oi
-    ON oi.order_id = o.order_id
-JOIN products p
-    ON p.product_id = oi.product_id;
-```
-
-The experiment was also repeated 100 times with randomized execution order.
+The execution order between Query A and Query B was randomized accross 30 different random seeds to minimize bias due to OS memory management. So we can say we have 3000 samples in total. 
 
 ---
 
 # Statistical Testing
 
-A paired t-test was used for both experiments.
-
+We applied a paired t-test using `ttest_rel()` from `SciPy` to compare the two experiments. The function computes the statistical significance of the mean differences between paired samples.
 ## Null Hypothesis (H0)
 
-The execution order does not affect execution time.
+>The filter predicates in the `WHERE` clause does not affect execution time.
 
 ## Alternative Hypothesis (H1)
 
-The execution order affects execution time.
+> The filter predicates in the `WHERE` clause affects execution time.
 
-Significance level:
-
+We use Significance level of
 ```text
 α = 0.05
 ```
+This implies a 5% risk of incorrectly rejecting the null hypothesis (Type I error).
 
 ---
 
@@ -117,180 +82,48 @@ Significance level:
 ## Filter Predicate Experiment
 
 ```text
-T-statistic : -37.165234641113045
-P-value     : 5.888950107269085e-60
+T-statistic : -193.82125833117516
+P-value     : 0.0
 Reject H0 → significant difference detected
 ```
 
-## Join Order Experiment
-
-```text
-T-statistic : 0.63895747219867
-P-value     : 0.5243261791579176
-Fail to reject H0 → no significant difference
-```
+This shows that **the order of filter predicate in `WHERE` clause really matter** if we don't provide any index.
 
 ---
 
-# Observations
+# Discussions
 
 ## Predicate Reordering Behavior
+When we executed the `EXPLAIN` keyword to obtain query plans, we got the filter order in those two were different. The optimizer appeared to preserve the textual order of predicates inside the query plan.
 
-Initially, the experiment used:
+From we the samples, we can clearly see that query A, where `customer_id = X` appeared first, consistently performed faster than query B. Since `customer_id = X` is highly selective while `status = 'completed'` is not selective, this suggests that the optimizer may evaluate predicates sequentially during row filtering. And because of short-circuit evaluation, query A is less likely to evaluated the later predicate, which explain why query A was faster.
 
-```sql
-WHERE status = 'completed'
-  AND order_date >= NOW() - INTERVAL '30 days'
-```
+The short-circuit behavior is also mentioned in [PostgreSQL 18.4 Documentation: 4.2.14. Expression Evaluation Rules](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-EXPRESS-EVAL)
 
-and its reversed version.
+This result may suggest that the optimizer don't reorder the predicates in `WHERE` clause at all. However, the documentation itself says that we cannot rely on the order we write in the query to be preserved during execution. This implies that the optimizer is free to reorder predicates to produce a more optimal execution plan.
 
-Using `EXPLAIN ANALYZE`, PostgreSQL consistently normalized the predicate order internally. The execution plan always displayed:
+Based on [PostgreSQL 18.4 Documentation: 14.1. Using EXPLAIN](https://www.postgresql.org/docs/18/using-explain.html#USING-EXPLAIN), we can conclude that optimizer generates query plan based on excution cost and selectivity. We use the same type of operation for two predicates in the experiment, so the execution cost msut be the same. But, in terms of selectivity, `customer_id` is more selective than `status`. Therefore, `customer_id` should be evaluated first to reduce the need to check `status` column condition. However, this behavior was not observed in the experiment, suggesting that selectivity may not have been considered in determining the predicate evaluation order.
 
-```text
-(status = ...)
-AND
-(order_date >= ...)
-```
-
-regardless of the order written by the user.
-
-This suggests that PostgreSQL performs predicate normalization or internal predicate reordering for this type of expression.
-
----
-
-## Equality Predicate Case
-
-The experiment was later changed to:
+From [`order_qual_clauses()`](https://github.com/postgres/postgres/blob/2c4bd2bf5700db98be0602854a8b7fa2c16b5f4a/src/backend/optimizer/plan/createplan.c#L5266) function, specifically its comments, we can infer that predicate selectivity is not considered when determining filter order. The optimizer only determines the order based on security level and execution cost.
 
 ```sql
-WHERE customer_id = X
-  AND status = 'completed'
+WHERE order_date >= NOW() - INTERVAL '30 days'
+  AND status = 'completed';
+
+WHERE customer_id = EXTRACT(DAY FROM NOW())
+  AND status = 'completed';
 ```
 
-and its reversed form.
-
-In this case, PostgreSQL appeared to preserve the textual order of predicates inside the execution plan.
-
-The query where `customer_id = X` appeared first consistently performed slightly better.
-
-Since `customer_id = X` is highly selective while `status = 'completed'` is not selective, this suggests that PostgreSQL may evaluate predicates sequentially during row filtering.
-
-This behavior resembles lazy evaluation or short-circuit evaluation:
-
-- highly selective predicates eliminate rows earlier
-- later predicates are evaluated less frequently
-
-However, both queries still used the same overall execution strategy:
-
-```text
-Parallel Seq Scan
-```
-
-No indexes were involved.
-
-Therefore, the observed difference likely exists at the executor level rather than at the optimizer planning level.
-
----
-
-# Join Order Observation
-
-For the join experiment, the statistical test failed to reject the null hypothesis.
-
-This suggests that PostgreSQL successfully optimized the join operations independently from the textual order written by the user.
-
-The execution plans remained effectively equivalent across both queries.
-
-This behavior aligns with the declarative nature of SQL and PostgreSQL's cost-based optimizer.
+Here, we tried to introduce a difference in execution cost between the predicates by adding the `NOW()` function to one of the queries. As expected, the predicate involving the function was pushed later in the filter order, since it has a higher execution cost.
 
 ---
 
 # Conclusion
 
-The experiment produced mixed results.
+This experiment suggests that PostgreSQL does not use predicate selectivity when reordering conditions in the `WHERE` clause. Instead, predicate ordering appears to be based on execution cost and security level, without considering selectivity.
 
-## Filter Predicate Order
+This also suggests that predicates order in `WHERE` clause can still matter when predicates have similar execution cost. In such cases, PostgreSQL tends to preserve the user-defined order, meaning that the textual order of predicates may influence evaluation order and, consequently, performance characteristics.
 
-The filter predicate experiment detected statistically significant execution time differences.
 
-The evidence suggests:
-
-- PostgreSQL may internally reorder some predicate types
-- predicate evaluation order can still influence execution time during sequential scans
-- highly selective predicates evaluated earlier may slightly improve performance
-
-However:
-
-- the differences were relatively small
-- the overall execution plan remained identical
-- no indexes were involved
-
-Therefore, the effect appears to occur mainly during predicate evaluation inside the executor rather than from major optimizer strategy differences.
-
----
-
-## Filter Predicate Order (With Index)
-
-After creating an index on `customer_id`:
-
-```sql
-CREATE INDEX idx_orders_customer_id
-ON orders(customer_id);
-```
-
-the predicate-order effect disappeared statistically.
-
-### Statistical Result
-
-```text
-T-statistic : -1.0990454926689885
-P-value     : 0.27441378533925087
-Fail to reject H0 → no significant difference
-```
-
-Both query forms produced effectively identical execution plans:
-
-```text
-Bitmap Heap Scan
-  -> Bitmap Index Scan on idx_orders_customer_id
-```
-
-The optimizer used the index to directly locate matching rows for:
-
-```text
-customer_id = X
-```
-
-before applying the remaining filter:
-
-```text
-status = 'completed'
-```
-
-As a result:
-
-- predicate textual order no longer affected execution time significantly
-- row filtering was dominated by indexed access rather than sequential predicate evaluation
-- executor-level predicate ordering effects became negligible
-
-This reinforces the idea that indexing has a far greater impact on performance than manual predicate ordering.
-
----
-
-## Join Order
-
-The join order experiment showed no statistically significant difference.
-
-This supports the hypothesis that PostgreSQL's optimizer treats joins declaratively and can rearrange join execution independently from the textual query order.
-
----
-
-# Final Interpretation
-
-This experiment suggests that:
-
-- join order generally does not matter in PostgreSQL for logically equivalent queries
-- filter predicate order can produce measurable differences in sequential scan scenarios, especially when predicate selectivity differs significantly
-- these differences likely occur at the executor level due to predicate evaluation order
-- once appropriate indexes are introduced, predicate order becomes effectively irrelevant
-- PostgreSQL preserves the declarative nature of SQL at the optimizer level, while small executor-level effects may still be observable in non-indexed scans
+----
+### TODO: Discuss the `JOIN` part

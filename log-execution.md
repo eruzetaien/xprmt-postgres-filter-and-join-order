@@ -58,6 +58,34 @@ WHERE customer_id = 106
 ```
 
 ```sql
+EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE status = 'completed'
+  AND customer_id = 5173;
+
+EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE customer_id = 5173
+  AND status = 'completed';
+```
+
+```sql
+EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE status = 'completed'
+  AND customer_id = EXTRACT(DAY FROM NOW());
+
+EXPLAIN
+SELECT COUNT(*)
+FROM orders
+WHERE customer_id = EXTRACT(DAY FROM NOW())
+  AND status = 'completed';
+```
+
+```sql
 CREATE INDEX idx_orders_customer_id
 ON orders(customer_id);
 ANALYZE orders;

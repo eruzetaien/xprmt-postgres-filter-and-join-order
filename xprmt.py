@@ -5,10 +5,8 @@ import random
 import os
 from tqdm import tqdm
 
-
 random_seed = 106
-# rng = random.Random(random_seed)
-
+rng = random.Random(random_seed)
 
 os.makedirs("results", exist_ok=True)
 
@@ -151,5 +149,5 @@ def run_join_experiment(rng):
 
 # MAIN
 if __name__ == "__main__":
-    run_filter_experiment(16)
-    # run_join_experiment()
+    run_filter_experiment(random_seed)
+    # run_join_experiment(rng)
